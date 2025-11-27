@@ -1,35 +1,34 @@
 package com.nmerza.cameraapp
 
-import NativeFilter
 import android.graphics.Bitmap
 import android.graphics.ImageFormat
+import android.graphics.Matrix
+import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.concurrent.ExecutorService
 
-
-// likely a Flow or MutableState.
-// ----------------------------------------------------------------------
-// NEW: Image Processor Class
-// Handles ImageAnalysis callback and manages the output Bitmap flow.
-// ----------------------------------------------------------------------
 class ImageProcessor(
     private val nativeFilter: NativeFilter,
     private val cameraExecutor: ExecutorService
 ) : ImageAnalysis.Analyzer {
 
-    // MutableStateFlow to pass the processed Bitmap back to the Compose UI
     private val _processedBitmap: MutableStateFlow<Bitmap?> = MutableStateFlow(null)
     val processedBitmap: StateFlow<Bitmap?> = _processedBitmap
 
+    // Public property to hold the current lens facing direction
+    var lensFacing: Int = CameraSelector.LENS_FACING_BACK
+
+    fun setActiveFilter(filterName: String) {
+        cameraExecutor.execute {
+            nativeFilter.setActiveFilter(filterName)
+        }
+    }
+
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
-        // The frame needs to be processed off the main thread,
-        // but since we are using a single-threaded executor for ImageAnalysis,
-        // we can proceed directly.
-
         val image = imageProxy.image
         if (image == null || image.format != ImageFormat.YUV_420_888) {
             imageProxy.close()
@@ -38,23 +37,40 @@ class ImageProcessor(
 
         val planes = image.planes
 
-        // Use the native C++ function to process the frame.
         val processedRgba = nativeFilter.processFrame(
-            planes[0].buffer, // Y
-            planes[1].buffer, // U
-            planes[2].buffer, // V
+            planes[0].buffer,       // Y
+            planes[1].buffer,       // U
+            planes[2].buffer,       // V
             image.width,
             image.height,
-            planes[0].rowStride, // Y Stride
-            planes[1].rowStride  // UV Stride
+            planes[0].rowStride,    // Y Stride
+            planes[1].rowStride,    // UV Stride
+            planes[1].pixelStride   // UV Pixel Stride
         )
 
-        // Convert the returned RGBA byte array into a Bitmap
-        val resultBitmap = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
-        resultBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(processedRgba))
+        // This is the bitmap with the filter applied, but without rotation
+        val rawBitmap = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+        rawBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(processedRgba))
+
+        // Get rotation degrees from the ImageProxy
+        val rotationDegrees = imageProxy.imageInfo.rotationDegrees.toFloat()
+
+        val matrix = Matrix().apply {
+            postRotate(rotationDegrees)
+
+            // Mirror the image for the front camera
+            if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
+                postScale(-1f, 1f, image.width / 2f, image.height / 2f)
+            }
+        }
+
+        // Create the final, correctly rotated bitmap
+        val rotatedBitmap = Bitmap.createBitmap(
+            rawBitmap, 0, 0, image.width, image.height, matrix, true
+        )
 
         // Update the flow for the Compose UI to redraw.
-        _processedBitmap.value = resultBitmap
+        _processedBitmap.value = rotatedBitmap
 
         imageProxy.close()
     }

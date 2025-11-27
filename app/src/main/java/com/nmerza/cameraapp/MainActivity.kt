@@ -1,6 +1,5 @@
 package com.nmerza.cameraapp
 
-import NativeFilter
 import android.Manifest
 import android.content.ContentUris
 import android.content.ContentValues
@@ -21,6 +20,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -49,10 +50,28 @@ import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+data class FilterInfo(val displayName: String, val internalName: String)
+
+private val filterOptions = listOf(
+    FilterInfo("None", "None"),
+    FilterInfo("Blue Arch", "Blue Architecture"),
+    FilterInfo("Hard Boost", "HardBoost"),
+    FilterInfo("Morning", "LongBeachMorning"),
+    FilterInfo("Lush Green", "LushGreen"),
+    FilterInfo("Magic Hour", "MagicHour"),
+    FilterInfo("Natural", "NaturalBoost"),
+    FilterInfo("Orange/Blue", "OrangeAndBlue"),
+    FilterInfo("B&W Soft", "SoftBlackAndWhite"),
+    FilterInfo("Waves", "Waves"),
+    FilterInfo("Blue Hour", "BlueHour"),
+    FilterInfo("Cold Chrome", "ColdChrome"),
+    FilterInfo("Autumn", "CrispAutumn"),
+    FilterInfo("Somber", "DarkAndSomber")
+)
+
 class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
     lateinit var imageProcessor: ImageProcessor
-    private var imageCapture: ImageCapture? = null
     private var cameraProvider: ProcessCameraProvider? = null
 
     private var lastPhotoUri by mutableStateOf<Uri?>(null)
@@ -99,7 +118,6 @@ class MainActivity : ComponentActivity() {
                     imageProcessor = imageProcessor,
                     processedBitmapFlow = imageProcessor.processedBitmap,
                     onCapturePhoto = { capturePhoto() },
-                    onImageCaptureReady = { capture -> imageCapture = capture },
                     onCameraProviderReady = { provider -> cameraProvider = provider },
                     getLastPhotoUri = { lastPhotoUri }
                 )
@@ -108,35 +126,35 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun capturePhoto() {
-        val imageCapture = this.imageCapture ?: return
+        val bitmapToSave = imageProcessor.processedBitmap.value
+        if (bitmapToSave == null) {
+            Log.e("CameraApp", "Photo capture failed: bitmap was null")
+            return
+        }
 
-        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis())
+        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
+            .format(System.currentTimeMillis())
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if(Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraApp")
             }
         }
 
-        val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-            .build()
-
-        imageCapture.takePicture(
-            outputOptions,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onError(exc: ImageCaptureException) {
-                    Log.e("CameraApp", "Photo capture failed: ${exc.message}", exc)
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        uri?.let {
+            try {
+                contentResolver.openOutputStream(it)?.use { outputStream ->
+                    bitmapToSave.compress(Bitmap.CompressFormat.JPEG, 95, outputStream)
                 }
-
-                override fun onImageSaved(output: ImageCapture.OutputFileResults){
-                    Log.d("CameraApp", "Photo capture succeeded: ${output.savedUri}")
-                    output.savedUri?.let { lastPhotoUri = it }
-                }
+                Log.d("CameraApp", "Photo capture succeeded: $it")
+                lastPhotoUri = it
+            } catch (e: Exception) {
+                Log.e("CameraApp", "Photo capture failed for URI $it", e)
+                contentResolver.delete(it, null, null)
             }
-        )
+        }
     }
 
     private fun findLastPhotoUri(): Uri? {
@@ -190,25 +208,24 @@ fun PermissionDeniedScreen() {
     }
 }
 
-enum class UiOption {
-    OPTION_ONE, OPTION_TWO, OPTION_THREE
-}
-
 @Composable
 fun CameraAppCameraScreen(
     imageProcessor: ImageProcessor,
     processedBitmapFlow: StateFlow<Bitmap?>,
     onCapturePhoto: () -> Unit,
-    onImageCaptureReady: (ImageCapture) -> Unit,
     onCameraProviderReady: (ProcessCameraProvider) -> Unit,
     getLastPhotoUri: () -> Uri?
 ) {
-    var selectedOption by remember { mutableStateOf(UiOption.OPTION_TWO) }
+    var selectedFilter by remember { mutableStateOf(filterOptions.first()) }
     var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
     var showLastPhoto by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalContext.current as LifecycleOwner
     val context = LocalContext.current
+
+    LaunchedEffect(lensFacing) {
+        imageProcessor.lensFacing = lensFacing
+    }
 
     Box(
         modifier = Modifier
@@ -219,7 +236,6 @@ fun CameraAppCameraScreen(
             imageProcessor = imageProcessor,
             modifier = Modifier.fillMaxSize(),
             lensFacing = lensFacing,
-            onImageCaptureReady = onImageCaptureReady,
             onCameraProviderReady = onCameraProviderReady,
             lifecycleOwner = lifecycleOwner,
             processedBitmapFlow = processedBitmapFlow
@@ -233,10 +249,11 @@ fun CameraAppCameraScreen(
 
         BottomSheetUI(
             modifier = Modifier.align(Alignment.BottomCenter),
-            selectedOption = selectedOption,
-            onOptionSelected = { option ->
-                selectedOption = option
-                Log.d("CameraApp", "Selected option: ${option.name}")
+            selectedFilter = selectedFilter,
+            onFilterSelected = { filter ->
+                selectedFilter = filter
+                imageProcessor.setActiveFilter(filter.internalName)
+                Log.d("CameraApp", "Selected filter: ${filter.displayName}")
             },
             onSwitchCamera = {
                 lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
@@ -275,7 +292,6 @@ fun ProcessedCameraPreview(
     imageProcessor: ImageProcessor,
     modifier: Modifier = Modifier,
     lensFacing: Int,
-    onImageCaptureReady: (ImageCapture) -> Unit,
     onCameraProviderReady: (ProcessCameraProvider) -> Unit,
     lifecycleOwner: LifecycleOwner,
     processedBitmapFlow: StateFlow<Bitmap?>
@@ -290,11 +306,6 @@ fun ProcessedCameraPreview(
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
             onCameraProviderReady(cameraProvider)
-
-            val imageCapture = ImageCapture.Builder()
-                .setFlashMode(ImageCapture.FLASH_MODE_OFF)
-                .build()
-            onImageCaptureReady(imageCapture)
 
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -312,8 +323,7 @@ fun ProcessedCameraPreview(
                 cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
-                    imageAnalysis, 
-                    imageCapture
+                    imageAnalysis
                 )
             } catch (e: Exception) {
                 Log.e("CameraApp", "Camera binding failed", e)
@@ -387,8 +397,8 @@ fun ThumbnailPreview(
 @Composable
 fun BottomSheetUI(
     modifier: Modifier = Modifier,
-    selectedOption: UiOption,
-    onOptionSelected: (UiOption) -> Unit,
+    selectedFilter: FilterInfo,
+    onFilterSelected: (FilterInfo) -> Unit,
     onSwitchCamera: () -> Unit,
     onCapturePhoto: () -> Unit,
     getLastPhotoUri: () -> Uri?,
@@ -399,7 +409,7 @@ fun BottomSheetUI(
             .fillMaxWidth()
             .background(
                 Color(0xFF101C22),
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+//                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
             )
             .padding(bottom = 16.dp)
     ) {
@@ -417,8 +427,9 @@ fun BottomSheetUI(
                     .background(Color(0xFF4A5568))
             )
         }
+
         Text(
-            text = "Choose option",
+            text = "Choose Filter",
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF9CA3AF),
@@ -427,11 +438,13 @@ fun BottomSheetUI(
                 .padding(top = 8.dp, bottom = 4.dp),
             textAlign = TextAlign.Center
         )
-        OptionSelectorRow(
-            selectedOption = selectedOption,
-            onOptionSelected = onOptionSelected,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+
+        FilterSelectorRow(
+            selectedFilter = selectedFilter,
+            onFilterSelected = onFilterSelected,
+            modifier = Modifier.padding(vertical = 12.dp)
         )
+
         CameraControlsRow(
             onSwitchCamera = onSwitchCamera,
             onCapturePhoto = onCapturePhoto,
@@ -443,73 +456,50 @@ fun BottomSheetUI(
 }
 
 @Composable
-fun OptionSelectorRow(
-    selectedOption: UiOption,
-    onOptionSelected: (UiOption) -> Unit,
+fun FilterSelectorRow(
+    selectedFilter: FilterInfo,
+    onFilterSelected: (FilterInfo) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
+    LazyRow(
         modifier = modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0xFF1F2937).copy(alpha = 0.8f)
+            .fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
-            OptionButton(
-                text = "Option 1",
-                isSelected = selectedOption == UiOption.OPTION_ONE,
-                onClick = { onOptionSelected(UiOption.OPTION_ONE) },
-                modifier = Modifier.weight(1f)
-            )
-            OptionButton(
-                text = "Option 2",
-                isSelected = selectedOption == UiOption.OPTION_TWO,
-                onClick = { onOptionSelected(UiOption.OPTION_TWO) },
-                modifier = Modifier.weight(1f)
-            )
-            OptionButton(
-                text = "Option 3",
-                isSelected = selectedOption == UiOption.OPTION_THREE,
-                onClick = { onOptionSelected(UiOption.OPTION_THREE) },
-                modifier = Modifier.weight(1f)
+        items(filterOptions) { filter ->
+            FilterButton(
+                text = filter.displayName,
+                isSelected = filter.internalName == selectedFilter.internalName,
+                onClick = { onFilterSelected(filter) }
             )
         }
     }
 }
 
 @Composable
-fun OptionButton(
+fun FilterButton(
     text: String,
     isSelected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
+    Button(
         onClick = onClick,
-        modifier = modifier
-            .fillMaxHeight()
-            .padding(horizontal = 2.dp),
+        modifier = modifier.height(40.dp),
         shape = RoundedCornerShape(20.dp),
-        color = if (isSelected) Color(0xFF13A4EC) else Color.Transparent
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (isSelected) Color(0xFF13A4EC) else Color(0xFF1F2937).copy(alpha = 0.8f),
+            contentColor = if (isSelected) Color.White else Color(0xFF9CA3AF)
+        ),
+        contentPadding = PaddingValues(horizontal = 20.dp)
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Text(
-                text = text,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = if (isSelected) Color.White else Color(0xFF9CA3AF),
-                textAlign = TextAlign.Center
-            )
-        }
+        Text(
+            text = text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -530,7 +520,9 @@ fun CameraControlsRow(
             onClick = onThumbnailClick,
             lastPhotoUri = getLastPhotoUri()
         )
+
         CaptureButton(onClick = onCapturePhoto)
+
         RoundIconButton(
             icon = Icons.Default.FlipCameraAndroid,
             onClick = onSwitchCamera,

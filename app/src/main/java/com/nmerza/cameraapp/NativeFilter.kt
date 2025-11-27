@@ -1,8 +1,5 @@
+package com.nmerza.cameraapp
 
-// ----------------------------------------------------------------------
-// NEW: JNI Bridge Class (Simplified for demonstration)
-// In a real app, this would be in its own NativeFilter.kt file.
-// ----------------------------------------------------------------------
 class NativeFilter {
     companion object {
         init {
@@ -19,9 +16,13 @@ class NativeFilter {
         width: Int,
         height: Int,
         strideY: Int,
-        strideUV: Int
+        strideUV: Int,
+        pixelStrideUV: Int
     ): ByteArray
 
     // Placeholder for LUT loading function.
     external fun loadLut(lutData: ByteArray, size: Int): Boolean
+
+    // New function to switch the active filter by name
+    external fun setActiveFilter(filterName: String): Boolean
 }
